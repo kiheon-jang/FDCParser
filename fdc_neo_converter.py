@@ -171,8 +171,8 @@ class FDCNEOConverter:
             # 1. 오프라인 파일에서 레코드 추출
             records = self._extract_records_from_offline(offline_file)
             
-            # 타임스탬프 기준 정렬 (최신순)
-            records.sort(key=lambda r: r[0], reverse=True)
+            # 타임스탬프 기준 정렬 (최신순, None 타임스탬프는 가장 오래된 것으로 처리)
+            records.sort(key=lambda r: r[0] if r[0] is not None else datetime.min, reverse=True)
             
             if not records:
                 return ConversionResult(
@@ -635,30 +635,53 @@ class FDCNEOConverter:
         records1: List[Tuple[datetime, bytes]], 
         records2: List[Tuple[datetime, bytes]]
     ) -> List[Tuple[datetime, bytes]]:
-        """두 레코드 리스트 병합 및 중복 제거"""
+        """두 레코드 리스트 병합 및 중복 제거
+        
+        중복 제거 규칙:
+        - 온라인 파일과 오프라인 파일 간의 중복만 제거
+        - 타임스탬프 + 데이터가 정확히 같을 때만 중복으로 간주
+        - 같은 타임스탬프라도 데이터가 다르면 별도 레코드로 취급
+        - 같은 파일 내의 중복은 제거하지 않음
+        """
         
         # 타임스탬프가 있는 레코드와 없는 레코드 분리
-        records_with_ts = []
-        records_without_ts = []
+        records1_with_ts = []
+        records1_without_ts = []
+        records2_with_ts = []
+        records2_without_ts = []
         
-        for ts, data in records1 + records2:
+        for ts, data in records1:
             if ts is not None:
-                records_with_ts.append((ts, data))
+                records1_with_ts.append((ts, data))
             else:
-                records_without_ts.append((ts, data))
+                records1_without_ts.append((ts, data))
         
-        # 타임스탬프가 있는 레코드만 중복 제거 (타임스탬프 기준)
-        unique_records = {}
-        for ts, data in records_with_ts:
-            # 같은 타임스탬프면 더 긴 데이터 유지
-            if ts not in unique_records or len(data) > len(unique_records[ts]):
-                unique_records[ts] = data
+        for ts, data in records2:
+            if ts is not None:
+                records2_with_ts.append((ts, data))
+            else:
+                records2_without_ts.append((ts, data))
         
-        # 타임스탬프 기준 정렬 (타임스탬프가 있는 레코드만)
-        sorted_records = sorted(unique_records.items(), key=lambda x: x[0] if x[0] is not None else datetime.min)
+        # 온라인 파일(records1)의 레코드를 기준으로 오프라인 파일(records2)과 비교
+        # 타임스탬프 + 데이터가 정확히 같은 경우만 중복으로 간주
+        
+        # records1의 모든 레코드를 set으로 변환 (빠른 조회를 위해)
+        records1_set = {(ts, data) for ts, data in records1_with_ts}
+        
+        # records1의 모든 레코드 포함 (같은 파일 내 중복은 제거하지 않음)
+        merged_with_ts = list(records1_with_ts)
+        
+        # records2에서 records1과 정확히 같은 레코드만 제외하고 나머지는 모두 포함
+        for ts, data in records2_with_ts:
+            # records1에 정확히 같은 레코드(타임스탬프 + 데이터)가 없으면 포함
+            if (ts, data) not in records1_set:
+                merged_with_ts.append((ts, data))
+        
+        # 타임스탬프 기준 정렬
+        merged_with_ts.sort(key=lambda x: x[0] if x[0] is not None else datetime.min)
         
         # 타임스탬프가 없는 레코드는 모두 포함 (중복 제거 안 함, 정렬 안 함)
-        result = sorted_records + records_without_ts
+        result = merged_with_ts + records1_without_ts + records2_without_ts
         
         return result
     
